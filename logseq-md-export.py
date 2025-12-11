@@ -4,11 +4,12 @@ import os
 import shutil
 from enum import Enum
 import argparse
+from typing import Dict, List
+import logging
 
-parser = argparse.ArgumentParser()
-parser.add_argument('logseq_file', type=str)
-parser.add_argument('output_path', type=str)
-args = parser.parse_args()
+
+logger = logging.getLogger("logseq-md-export")
+
 
 class LineType(Enum):
     TITLE = 1
@@ -19,38 +20,33 @@ class LineType(Enum):
     EMPTY = 6
     TEXT = 7
 
+
 class LineHierarchy(Enum):
     PARENT = 1
     CHILD = 2
 
-# Open logseq page and create output folder
-file = open(args.logseq_file, "r", encoding="utf-8")
-output_project_path = os.path.join(args.output_path, os.path.basename(args.logseq_file))
-try:
-    os.mkdir(output_project_path)
-except FileExistsError:
-    pass
-out = open(os.path.join(output_project_path, os.path.basename(args.logseq_file)), "w", encoding="utf-8")
 
 def get_file_info(file_path):
     abs_path = os.path.abspath(file_path)
     os.path.basename(abs_path)
 
-def import_asset(filename, subdir=""):
-    logseq_file_base_dir = os.path.dirname(os.path.abspath(args.logseq_file))
-    try:
-        os.mkdir(os.path.join(output_project_path, "assets"))
-    except FileExistsError:
-        pass
-    shutil.copy(os.path.join(logseq_file_base_dir, "..", "assets", subdir, filename), os.path.join(output_project_path, "assets", filename))
 
-def get_line_type(line):
+def import_asset(logseq_file_base_dir, filename, output_project_path, subdir=""):
+
+    os.makedirs(os.path.join(output_project_path, "assets"), exist_ok=True)
+    shutil.copy(
+        os.path.join(logseq_file_base_dir, "..", "assets", subdir, filename),
+        os.path.join(output_project_path, "assets", filename),
+    )
+
+
+def get_line_type(line, line_content_raw):
     L1_tag = line_content_raw[0]
     L2_tag = line_content_raw[2] if len(line_content_raw) > 2 else None
 
     if L1_tag == "#":
         return LineType.TITLE, LineHierarchy.PARENT
-    
+
     if L2_tag is None:
         if L1_tag == "-":
             # empty line on a list
@@ -59,7 +55,7 @@ def get_line_type(line):
             # empty line on a multi-line block
             return LineType.EMPTY, LineHierarchy.CHILD
         else:
-            print("PARSING ERROR AT LINE:", line)
+            logger.error("PARSING ERROR AT LINE: %s", line)
             exit(1)
     if L2_tag == " ":
         # this must be part of a multi-line content block
@@ -76,7 +72,7 @@ def get_line_type(line):
         elif L1_tag == " ":
             return LineType.TEXT, LineHierarchy.CHILD
         else:
-            print("PARSING ERROR AT LINE:", line)
+            logger.error("PARSING ERROR AT LINE: %s", line)
             exit(1)
     elif L2_tag == "`":
         parent_code_block = re.search("^(\t*)- (```)", line)
@@ -91,7 +87,7 @@ def get_line_type(line):
         elif L1_tag == " ":
             return LineType.TEXT, LineHierarchy.CHILD
         else:
-            print("PARSING ERROR AT LINE:", line)
+            logger.error("PARSING ERROR AT LINE: %s", line)
             exit(1)
     else:
         # no tag recognized, must be text.
@@ -102,167 +98,319 @@ def get_line_type(line):
             return LineType.TEXT, LineHierarchy.CHILD
 
 
-target_line_indent = 0
-cur_list_depth = 0
-last_target_line_indent = 0
-traversing_code_block = False
-lines_to_skip = 0
-lines = []
+def export_file_to_folder(logseq_file: str, output_path: str, no_br: bool = False):
+    """
+    This is the main entry point to export a Logseq markdown file to a folder.
+    Args:
+        logseq_file (str): Path to the Logseq markdown file to export.
+        output_path (str): Path to the output directory.
+        no_br (bool): If True, do not insert <br> tags for empty lines.
 
-lines_raw = file.readlines()
+    Returns:
+        None
+    """
 
-for line in lines_raw:
-    # match any line and get its indentation level
-    line_re = re.search("^(\t*)(.*)$", line)
+    logseq_file_base_dir = os.path.dirname(os.path.abspath(logseq_file))
 
-    if line_re is None:
-        print("ERROR: no match on:", line)
-        continue
+    os.makedirs(output_path, exist_ok=True)
 
-    line_content_raw = line_re.groups()[1]
-    line_indent = len(line_re.groups()[0])
-    line_type, line_hierarchy = get_line_type(line)
-        
-    lines.append(
-        {
-            "content": line_content_raw,
-            "indent" : line_indent,
-            "type": line_type,
-            "hierarchy": line_hierarchy
-        }
-    )
+    # Open logseq page and read it
+    with open(logseq_file, "r", encoding="utf-8") as file:
+        lines_raw = file.readlines()
 
+    # define variables to keep track of indentation levels
+    target_line_indent = 0
+    cur_list_depth = 0
+    last_target_line_indent = 0
+    traversing_code_block = False
+    lines_to_skip = 0
 
-for i in range(len(lines)):
+    # will contain dicts parsed line info
+    lines: List[Dict] = []
 
-    if lines_to_skip > 0:
-        lines_to_skip -= 1
-        continue
+    for line in lines_raw:
+        # match any line and get its indentation level
+        line_re = re.search("^(\t*)(.*)$", line)
 
-    print("[", lines[i]["indent"], lines[i]["type"], lines[i]["hierarchy"], "]", ":", lines[i]["content"])
+        if line_re is None:
+            logger.warning("Warning: no match on: %s", line)
+            logger.warning("Skipping the line")
+            continue
 
-    if lines[i]["type"] == LineType.CODE_BLOCK_MARKER:
-        traversing_code_block = not traversing_code_block
-    elif lines[i]["content"].find("../assets") >= 0:
-        asset_re = re.search(r"(^.*\[.*\]\()(../)assets/(.*)\)", lines[i]["content"])
-        if asset_re is not None:
-            filename = asset_re.groups()[2]
-            print("Importing asset:", filename)
-            import_asset(filename)
-            lines[i]["content"] = asset_re.groups()[0] + "assets/" + asset_re.groups()[2] + ")"
-            
-            # TODO make sure this need not to be handled down below as well.
-    elif lines[i]["content"].find("{{renderer :drawio,") >= 0:
-        asset_re = re.search(r"(^.*){{renderer :drawio, (.*.svg)}}", lines[i]["content"])
-        if asset_re is not None:
-            filename = asset_re.groups()[1]
-            print("filename:", filename)
-            print("Importing asset:", filename)
-            import_asset(filename, subdir=os.path.join("storages", "logseq-drawio-plugin"))
-            lines[i]["content"] = asset_re.groups()[0] + "!["+ filename +"]"+ "(assets/"+ filename +")"
-            # TODO make sure this need not to be handled down below as well.
-    elif lines[i]["content"].find("- TODO ") >= 0:
-        checkbox_re = re.search(r"(^\t*)- TODO (.*)$", lines[i]["content"])
-        if checkbox_re is not None:
-            lines[i]["content"] = checkbox_re.groups()[0] + "- **&#x2610;" + " TODO** " + checkbox_re.groups()[1]
-    elif lines[i]["content"].find("- DOING ") >= 0:
-        checkbox_re = re.search(r"(^\t*)- DOING (.*)$", lines[i]["content"])
-        if checkbox_re is not None:
-            lines[i]["content"] = checkbox_re.groups()[0] + "- **&#x231B;" + " DOING** " + checkbox_re.groups()[1]
-    elif lines[i]["content"].find("- DONE ") >= 0:
-        checkbox_re = re.search(r"(^\t*)- DONE (.*)$", lines[i]["content"])
-        if checkbox_re is not None:
-            lines[i]["content"] = checkbox_re.groups()[0] + "- **&#x2611;** ~~" + checkbox_re.groups()[1] + "~~"  
-    elif lines[i]["content"].find("- LATER ") >= 0:
-        checkbox_re = re.search(r"(^\t*)- LATER (.*)$", lines[i]["content"])
-        if checkbox_re is not None:
-            lines[i]["content"] = checkbox_re.groups()[0] + "- **&#x23F2;" + " LATER** " + checkbox_re.groups()[1]  
-    elif lines[i]["content"].find("- NOW ") >= 0:
-        checkbox_re = re.search(r"(^\t*)- NOW (.*)$", lines[i]["content"])
-        if checkbox_re is not None:
-            lines[i]["content"] = checkbox_re.groups()[0] + "- **&#x23F0;" + " NOW** " + checkbox_re.groups()[1]  
+        line_content_raw = line_re.groups()[1]
+        line_indent = len(line_re.groups()[0])
+        line_type, line_hierarchy = get_line_type(line, line_content_raw)
 
-    # CALCULATE TARGET INDENTATION 
-    if i == 0:
-        target_line_indent = 0
-    elif lines[i]["type"] == LineType.TITLE or lines[i-1]["type"] == LineType.TITLE:
-        # Titles have no indentation. 
-        # Any element that comes immediately after a title must have no indentation as well
-        target_line_indent = 0
+        lines.append(
+            {
+                "content": line_content_raw,
+                "indent": line_indent,
+                "type": line_type,
+                "hierarchy": line_hierarchy,
+            }
+        )
 
-    if lines[i]["type"] != LineType.TITLE and lines[i-1]["type"] != LineType.TITLE:
-        # If this row belongs to a series of rows of the same kind...
-        if lines[i]["indent"] > lines[i-1]["indent"]:
-            # Standard markdown list: the first level is not indented, the subsequents are.
-            cur_list_depth += 1
-            if cur_list_depth > 1:
-                target_line_indent = last_target_line_indent + 1
+    content = ""  # make sure content is always at least defined
+    output_content = ""
+    for i, line_info in enumerate(lines):
+
+        if lines_to_skip > 0:
+            lines_to_skip -= 1
+            continue
+
+        logger.debug(
+            "[%d %s %s] : %s",
+            i,
+            line_info["type"],
+            line_info["hierarchy"],
+            line_info["content"],
+        )
+
+        if line_info["type"] == LineType.CODE_BLOCK_MARKER:
+            traversing_code_block = not traversing_code_block
+        elif line_info["content"].find("../assets") >= 0:
+            asset_re = re.search(
+                r"(^.*\[.*\]\()(../)assets/(.*)\)", line_info["content"]
+            )
+            if asset_re is not None:
+                filename = asset_re.groups()[2]
+                logger.debug("Importing asset: %s", filename)
+                import_asset(
+                    logseq_file_base_dir,
+                    filename,
+                    output_path,
+                )
+                line_info["content"] = (
+                    asset_re.groups()[0] + "assets/" + asset_re.groups()[2] + ")"
+                )
+
+                # TODO make sure this need not to be handled down below as well.
+        elif line_info["content"].find("{{renderer :drawio,") >= 0:
+            asset_re = re.search(
+                r"(^.*){{renderer :drawio, (.*.svg)}}", line_info["content"]
+            )
+            if asset_re is not None:
+                filename = asset_re.groups()[1]
+                logger.debug("filename: %s", filename)
+                logger.debug("Importing asset: %s", filename)
+                import_asset(
+                    logseq_file_base_dir,
+                    filename,
+                    output_path,
+                    subdir=os.path.join("storages", "logseq-drawio-plugin"),
+                )
+                line_info["content"] = (
+                    asset_re.groups()[0]
+                    + "!["
+                    + filename
+                    + "]"
+                    + "(assets/"
+                    + filename
+                    + ")"
+                )
+                # TODO make sure this need not to be handled down below as well.
+        elif line_info["content"].find("- TODO ") >= 0:
+            checkbox_re = re.search(r"(^\t*)- TODO (.*)$", line_info["content"])
+            if checkbox_re is not None:
+                line_info["content"] = (
+                    checkbox_re.groups()[0]
+                    + "- **&#x2610;"
+                    + " TODO** "
+                    + checkbox_re.groups()[1]
+                )
+        elif line_info["content"].find("- DOING ") >= 0:
+            checkbox_re = re.search(r"(^\t*)- DOING (.*)$", line_info["content"])
+            if checkbox_re is not None:
+                line_info["content"] = (
+                    checkbox_re.groups()[0]
+                    + "- **&#x231B;"
+                    + " DOING** "
+                    + checkbox_re.groups()[1]
+                )
+        elif line_info["content"].find("- DONE ") >= 0:
+            checkbox_re = re.search(r"(^\t*)- DONE (.*)$", line_info["content"])
+            if checkbox_re is not None:
+                line_info["content"] = (
+                    checkbox_re.groups()[0]
+                    + "- **&#x2611;** ~~"
+                    + checkbox_re.groups()[1]
+                    + "~~"
+                )
+        elif line_info["content"].find("- LATER ") >= 0:
+            checkbox_re = re.search(r"(^\t*)- LATER (.*)$", line_info["content"])
+            if checkbox_re is not None:
+                line_info["content"] = (
+                    checkbox_re.groups()[0]
+                    + "- **&#x23F2;"
+                    + " LATER** "
+                    + checkbox_re.groups()[1]
+                )
+        elif line_info["content"].find("- NOW ") >= 0:
+            checkbox_re = re.search(r"(^\t*)- NOW (.*)$", line_info["content"])
+            if checkbox_re is not None:
+                line_info["content"] = (
+                    checkbox_re.groups()[0]
+                    + "- **&#x23F0;"
+                    + " NOW** "
+                    + checkbox_re.groups()[1]
+                )
+
+        # CALCULATE TARGET INDENTATION
+        if i == 0:
+            target_line_indent = 0
+        elif (
+            line_info["type"] == LineType.TITLE
+            or lines[i - 1]["type"] == LineType.TITLE
+        ):
+            # Titles have no indentation.
+            # Any element that comes immediately after a title must have no indentation as well
+            target_line_indent = 0
+
+        if (
+            line_info["type"] != LineType.TITLE
+            and lines[i - 1]["type"] != LineType.TITLE
+        ):
+            # If this row belongs to a series of rows of the same kind...
+            if line_info["indent"] > lines[i - 1]["indent"]:
+                # Standard markdown list: the first level is not indented, the subsequents are.
+                cur_list_depth += 1
+                if cur_list_depth > 1:
+                    target_line_indent = last_target_line_indent + 1
+                else:
+                    target_line_indent = last_target_line_indent
+            elif line_info["indent"] < lines[i - 1]["indent"]:
+                # Detect if this LIST element is less indendeted than the previous
+                target_line_indent = max(
+                    0,
+                    last_target_line_indent
+                    - (lines[i - 1]["indent"] - line_info["indent"]),
+                )
+                cur_list_depth -= 1
             else:
                 target_line_indent = last_target_line_indent
-        elif lines[i]["indent"] < lines[i-1]["indent"]:
-            # Detect if this LIST element is less indendeted than the previous 
-            target_line_indent = max(0, last_target_line_indent - (lines[i-1]["indent"] - lines[i]["indent"]))
-            cur_list_depth -= 1
+
+        if traversing_code_block:
+            content = line_info["content"][2:]
         else:
-            target_line_indent = last_target_line_indent
-
-    if traversing_code_block:
-        content = lines[i]["content"][2:]
-    else:
-        # Represent each line depending on its type
-        if lines[i]["type"] == LineType.TITLE:
-            content = lines[i]["content"][lines[i]["content"].find("#"):]
-            cur_list_depth = 0
-        elif lines[i]["type"] == LineType.LIST:
-            if cur_list_depth > 0:
-                content = lines[i]["content"]
-                if i < len(lines) - 1 and lines[i+1]["indent"] < lines[i]["indent"]:
-                    content = content + "\n"
-            else:
-                if i < len(lines) - 1 and lines[i+1]["type"] == LineType.LIST and lines[i+1]["indent"] == lines[i]["indent"]:
-                    content = lines[i]["content"][2:] + "\\"
+            # Represent each line depending on its type
+            if line_info["type"] == LineType.TITLE:
+                content = line_info["content"][line_info["content"].find("#") :]
+                cur_list_depth = 0
+            elif line_info["type"] == LineType.LIST:
+                if cur_list_depth > 0:
+                    content = line_info["content"]
+                    if (
+                        i < len(lines) - 1
+                        and lines[i + 1]["indent"] < line_info["indent"]
+                    ):
+                        content = content + "\n"
                 else:
-                    content = lines[i]["content"][2:]
-        elif lines[i]["type"] == LineType.TEXT:
-            if lines[i]["content"].find("collapsed:: true") >= 0:
-                print("Removing logseq-specifc tag:", lines[i]["content"])
-                continue
-            if lines[i]["content"].find(":LOGBOOK:") >= 0:
-                print("Removing logseq-specifc tag and all subsequent entries:", lines[i]["content"])
-                for l in range(i, len(lines)):
-                    if lines[l]["content"].find(":END:") >= 0:
-                        break
-                    lines_to_skip += 1
-                continue
-            else:
-                # We might be in a multi-line content block of some kind.
-                content = lines[i]["content"][2:]
-            # always terminate the line with a return
-            if i < len(lines) - 1 and lines[i+1]["type"] != lines[i]["type"]:
-                content = content + "\n"
-        elif lines[i]["type"] == LineType.CODE:
-            content = lines[i]["content"][2:]
-        elif lines[i]["type"] == LineType.EMPTY:
-            content = "<br>\n"
-        elif lines[i]["type"] == LineType.CODE_BLOCK_MARKER:
-            content = lines[i]["content"][2:]
-        elif lines[i]["type"] == LineType.QUOTE:
-            content = lines[i]["content"][2:]
+                    if (
+                        i < len(lines) - 1
+                        and lines[i + 1]["type"] == LineType.LIST
+                        and lines[i + 1]["indent"] == line_info["indent"]
+                    ):
+                        content = line_info["content"][2:] + "\\"
+                    else:
+                        content = line_info["content"][2:]
+            elif line_info["type"] == LineType.TEXT:
+                if line_info["content"].find("collapsed:: true") >= 0:
+                    logger.debug(
+                        "Removing logseq-specifc tag: %s", line_info["content"]
+                    )
+                    continue
+                if line_info["content"].find(":LOGBOOK:") >= 0:
+                    logger.debug(
+                        "Removing logseq-specifc tag and all subsequent entries: %s",
+                        line_info["content"],
+                    )
+                    for l in range(i, len(lines)):
+                        if lines[l]["content"].find(":END:") >= 0:
+                            break
+                        lines_to_skip += 1
+                    continue
+                else:
+                    # We might be in a multi-line content block of some kind.
+                    content = line_info["content"][2:]
+                # always terminate the line with a return
+                if i < len(lines) - 1 and lines[i + 1]["type"] != line_info["type"]:
+                    content = content + "\n"
+            elif line_info["type"] == LineType.CODE:
+                content = line_info["content"][2:]
+            elif line_info["type"] == LineType.EMPTY:
+                content = "<br>\n" if not no_br else "\n"
+            elif line_info["type"] == LineType.CODE_BLOCK_MARKER:
+                content = line_info["content"][2:]
+            elif line_info["type"] == LineType.QUOTE:
+                content = line_info["content"][2:]
 
-        if lines[i]["type"] != LineType.CODE_BLOCK_MARKER:
-            if i < len(lines) - 1 and lines[i+1]["type"] == LineType.TEXT and not lines[i]["type"] == LineType.TITLE:
-                content = content + "\\"
+            if line_info["type"] != LineType.CODE_BLOCK_MARKER:
+                if (
+                    i < len(lines) - 1
+                    and lines[i + 1]["type"] == LineType.TEXT
+                    and not line_info["type"] == LineType.TITLE
+                ):
+                    content = content + "\\"
 
-    content = content + "\n"
+        content = content + "\n"
+
+        tabs = "".join(["\t" for _ in range(target_line_indent)])
+        content = tabs + content
+
+        output_content += content
+        # only update previous element type for next cycle when a new element starts
+        if line_info["hierarchy"] == LineHierarchy.PARENT:
+            last_target_line_indent = target_line_indent
+
+        # logger.debug("last_target_line_indent: %d, target_line_indent: %d", last_target_line_indent, target_line_indent)
+        # logger.debug("cur_list_depth: %d", cur_list_depth)
+
+    # first prepare the output to receive the file.
+    final_destination_path = os.path.join(output_path, os.path.basename(logseq_file))
+
+    # finally write the file
+    with open(
+        final_destination_path,
+        "w",
+        encoding="utf-8",
+    ) as out:
+        out.write(output_content)
+
+    logger.info("Exported to: %s", final_destination_path)
 
 
-    tabs = "".join(["\t" for _ in range(target_line_indent)])
-    content = tabs + content
-    # only update previous element type for next cycle when a new element starts
-    if lines[i]["hierarchy"] == LineHierarchy.PARENT:
-        last_target_line_indent = target_line_indent
+if __name__ == "__main__":
+    # initially the project were using 'print', but we moved to logging for better control.
+    # To match with the initial behavior we set logging to debug level
+    # and target stdout with simple message formater
+    formatter = logging.Formatter("%(message)s")
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    # remove the existing handlers
+    logger.handlers = []
+    logger.addHandler(console_handler)
+    logger.setLevel(logging.DEBUG)
+    # this setting will make the 'python logseq-md-export.py' behave the same way as if
+    # it were doing print; to not break compatibility with initial usage patterns.
+    # Tho it can now be integrated in larger projects with more control over its logging behavior.
 
-    # print("last_target_line_indent:", last_target_line_indent, "target_line_indent:", target_line_indent)
-    # print("cur_list_depth:", cur_list_depth)
-    out.write(content)
-print("Done")
+    parser = argparse.ArgumentParser(
+        description="Export Logseq markdown file to a folder, adjusting formatting and importing assets."
+    )
+    parser.add_argument(
+        "logseq_file",
+        type=str,
+        help="Path to the Logseq markdown file to export.",
+    )
+    parser.add_argument("output_path", type=str, help="Path to the output directory.")
+    parser.add_argument(
+        "--no-br",
+        action="store_true",
+        help="Do not insert <br> tags for empty lines.",
+    )
+    args: argparse.Namespace = parser.parse_args()
+    export_file_to_folder(
+        args.logseq_file,
+        args.output_path,
+        no_br=args.no_br,
+    )
