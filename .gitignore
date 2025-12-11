@@ -5,3 +5,4 @@ output/
 
 build 
 logseq_md_export.egg-info
+.python-version
