@@ -40,9 +40,20 @@ And maybe something else?\
 You let me know. Generally speaking I try not to mess up the original content more than necessary.
 
 ## How to use
+
+Install with directly from github: 
+
+```bash
+pip install git+https://github.com/fanff/logseq-md-export.git
 ```
-./logseq-md-export.py /path/to/logseq/pages/yourpage.md /your/destination/folder
+
+Use it from command line:
+
+```bash
+logseq-md-export /path/to/logseq/pages/yourpage.md /your/destination/folder
 ```
+
+
 ## Quality warning
 This implementation is a bit rushed, and needs some cleaning up, but everything should work fine in most cases.\
 If not, please **open an Issue** describing the problem (screenshots are also useful) and attach the relevant logseq page.

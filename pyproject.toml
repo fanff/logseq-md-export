@@ -1,0 +1,13 @@
+[project]
+name = "logseq-md-export"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+[project.scripts]
+logseq-md-export = "logseq_md_export:main"
+
+# define the unique file necessary for packaging
+[tool.setuptools]
+py-modules = ["logseq_md_export"]

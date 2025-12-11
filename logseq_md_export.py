@@ -379,7 +379,7 @@ def export_file_to_folder(logseq_file: str, output_path: str, no_br: bool = Fals
     logger.info("Exported to: %s", final_destination_path)
 
 
-if __name__ == "__main__":
+def main():
     # initially the project were using 'print', but we moved to logging for better control.
     # To match with the initial behavior we set logging to debug level
     # and target stdout with simple message formater
@@ -408,9 +408,26 @@ if __name__ == "__main__":
         action="store_true",
         help="Do not insert <br> tags for empty lines.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging.",
+    )
+
     args: argparse.Namespace = parser.parse_args()
+
+    args_debug: bool = args.debug
+    if args_debug:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.INFO)
+
     export_file_to_folder(
         args.logseq_file,
         args.output_path,
         no_br=args.no_br,
     )
+
+
+if __name__ == "__main__":
+    main()
